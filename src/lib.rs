@@ -1,7 +1,4 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-use logos::{ Logos, Lexer };
-
+use logos::Logos;
 use std::collections::HashMap;
 
 /// All meaningful CSS tokens
@@ -20,7 +17,7 @@ pub enum Token {
     #[token("~")]
     GeneralSiblingCombinator,
 
-    #[regex(r"#([0-9a-fA-F]{3}){1,2}", |lex| lex.slice().to_string())]
+    #[regex(r"#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?", |lex| lex.slice().to_string())]
     HexColor(String),
 
     #[regex(r"#[a-zA-Z_][a-zA-Z0-9_-]*", |lex| lex.slice().to_string())]
@@ -38,17 +35,14 @@ pub enum Token {
     #[regex(r"::[a-zA-Z_][a-zA-Z0-9_-]*", |lex| lex.slice().to_string())]
     PseudoElement(String),
 
-    #[regex(r"([\w-]+)\s*:", |lex| lex.slice().trim_end_matches(':').to_string(), priority = 2)]
+    #[regex(r"[a-zA-Z-]+\s*:", |lex| lex.slice().trim_end_matches(':').to_string(), priority = 2)]
     Property(String),
 
-    #[regex(r"[0-9]+(\.[0-9]+)?(px|em|rem|%)?", |lex| lex.slice().to_string())]
+    #[regex(r"[0-9]+(\.[0-9]+)?(px|em|rem|%)?", |lex| lex.slice().to_string(), priority = 4)]
     NumericValue(String),
 
     #[token("{")]
     OpenBrace,
-
-    #[regex(r"[0-9]+%", |lex| lex.slice().to_string())]
-    PercentageValue(String),
 
     #[token(">")]
     ChildCombinator,
