@@ -1,39 +1,30 @@
-.abs {
-  width:  50px;
-  height:  50px;
-  position:  absolute;
-  background:  purple;
+#p1 {
+    background-color: hsla(120, 75%, 50%, 0.2);
 }
-.container {
-  border:  solid;
-  position:  relative;
-  height:  100px;
-  display:  inline-block;
-  margin-right:  5px;
-  width:  100px;
+#p2 {
+    background-color: hsla(120, 75%, 50%, 0.4);
 }
-.top {
-  top:  0;
+#p3 {
+    background-color: hsla(1.2e2, 75%, 50%, 0.6);
 }
-.grid {
-  justify-items:  center;
-  width:  100%;
-  height:  100%;
-  display:  grid;
-  align-items:  center;
+#p4 {
+    background-color: hsla(120, 75%, 50%, 0.8);
 }
-.left {
-  left:  0;
+#p5 {
+    background-color: hsla(120, 75%, 50%, 1);
 }
-.center-inline {
-  left:  25px;
+#p6 {
+    background-color: hsl(240, 75%, 50%);
 }
-.flex {
-  height:  100%;
-  display:  flex;
-  width:  100%;
-  align-items:  center;
+#p7 {
+    background-color: hsl(600, 75%, 50%);
 }
-.center-block {
-  top:  25px;
+#p8 {
+    background-color: hsl(9.6e2, 75%, 50%);
+}
+#p9 {
+    background-color: hsl(600, 75%, 50%);
+}
+#p10 {
+    background-color: hsl(240, 75%, 50%);
 }
