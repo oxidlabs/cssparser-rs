@@ -12,11 +12,8 @@ struct Parser {
 
 #[derive(Debug)]
 struct Properties {
-    properties: HashMap<String, Values>,
+    properties: HashMap<String, Vec<String>>,
 }
-
-#[derive(Debug)]
-struct Values(Vec<String>);
 
 impl Parser {
     fn new() -> Self {
@@ -29,7 +26,7 @@ impl Parser {
         self.selectors.insert(selector, Properties::new());
     }
 
-    fn add_property(&mut self, selector: String, property: String, value: String) {
+    fn add_property(&mut self, selector: String, property: String, value: Option<String>) {
         if self.selectors.contains_key(&selector) {
             self.selectors.get_mut(&selector).unwrap().insert(property, value);
         }
@@ -37,7 +34,7 @@ impl Parser {
 
     fn update_property(&mut self, selector: String, property: String, value: String) {
         if self.selectors.contains_key(&selector) {
-            self.selectors.get_mut(&selector).unwrap().insert(property, value);
+            self.selectors.get_mut(&selector).unwrap().insert(property, Some(value));
         }
     }
 }
@@ -49,23 +46,27 @@ impl Properties {
         }
     }
 
-    fn insert(&mut self, property: String, value: String) {
+    fn insert(&mut self, property: String, value: Option<String>) {
         if self.properties.contains_key(&property) {
-            self.properties.get_mut(&property).unwrap().0.push(value);
+            self.properties.get_mut(&property).unwrap().push(value.unwrap());
         } else {
-            self.properties.insert(property, Values(vec![value]));
+            if let Some(value) = value {
+                self.properties.insert(property, vec![value]);
+            } else {
+                self.properties.insert(property, vec![]);
+            }
         }
     }
 
-    fn get(&self, property: &str) -> Option<&Values> {
+    fn get(&self, property: &str) -> Option<&Vec<String>> {
         self.properties.get(property)
     }
 
-    fn get_mut(&mut self, property: &str) -> Option<&mut Values> {
+    fn get_mut(&mut self, property: &str) -> Option<&mut Vec<String>> {
         self.properties.get_mut(property)
     }
 
-    fn remove(&mut self, property: &str) -> Option<Values> {
+    fn remove(&mut self, property: &str) -> Option<Vec<String>> {
         self.properties.remove(property)
     }
 }
@@ -76,7 +77,7 @@ impl Display for Parser {
             writeln!(f, "{} {{", selector)?;
 
             for (property, values) in &properties.properties {
-                writeln!(f, "  {}: {};", property, values.0.join(" "))?;
+                writeln!(f, "  {}: {};", property, values.join(" "))?;
             }
 
             writeln!(f, "}}")?;
@@ -89,14 +90,40 @@ impl Display for Parser {
 fn main() {
     let css =
         r#"
-        .container {
-            border: 1px solid;
-            position: relative;
-            width: 100px;
-            height: 100px;
-            display: inline-block;
-            margin-right: 5px;
-        }
+body {
+  margin: 0;
+}
+
+.container {
+  writing-mode: vertical-rl;
+  direction: ltr;
+  display: inline-block;
+  position: relative;
+  margin: 20px;
+  border: solid 4px;
+  width: 40px;
+  height: 40px;
+}
+
+.item {
+  position: absolute;
+  background: green;
+  inset: 5px;
+  margin: 10px;
+  width: 30px;
+  height: 30px;
+}
+
+.safe {
+  align-self: safe end;
+}
+.unsafe {
+  align-self: unsafe end;
+}
+
+.rtl {
+  direction: rtl;
+}
     "#;
 
     let start = std::time::Instant::now();
@@ -107,27 +134,45 @@ fn main() {
     let mut current_value = String::new();
 
     while let Some(token) = lexer.next() {
-        if token.is_err() && !token.is_ok() {
-            continue;
-        }
-
-        let token = token.unwrap();
-
         match token {
-            Token::ClassSelector(class) => {
-                current_selector = class;
+            Ok(Token::Value(value)) => {
+                if current_selector.is_empty() {
+                    current_selector = value;
+                } else if !current_property.is_empty() {
+                    current_value = value;
+                    parser.update_property(
+                        current_selector.clone(),
+                        current_property.clone(),
+                        current_value.clone()
+                    );
+                } else {
+                    current_selector.push_str(&value);
+                }
+            }
+            Ok(Token::PseudoClass(pseudo)) | Ok(Token::PseudoElement(pseudo)) => {
+                current_selector.push_str(&pseudo);
+            }
+            Ok(Token::IdSelector(value)) | Ok(Token::ClassSelector(value)) => {
+                current_selector = value;
+            }
+            Ok(Token::Property(property)) => {
+                current_property = property;
+                parser.add_property(current_selector.clone(), current_property.clone(), None);
+            }
+            Ok(Token::OpenBrace) => {
                 parser.create_selector(current_selector.clone());
             }
-            Token::Property(property) => {
-                current_property = property;
-                parser.add_property(
-                    current_selector.clone(),
-                    current_property.clone(),
-                    current_value.clone()
-                );
+            Ok(Token::CloseBrace) => {
+                current_selector.clear();
+                current_property.clear();
+                current_value.clear();
             }
-            Token::Value(value) => {
-                if !current_selector.is_empty() && !current_property.is_empty() {
+            Ok(Token::Semicolon) => {
+                current_property.clear();
+                current_value.clear();
+            }
+            Ok(Token::NumericValue(value)) => {
+                if !current_property.is_empty() {
                     current_value = value;
                     parser.update_property(
                         current_selector.clone(),
@@ -136,16 +181,9 @@ fn main() {
                     );
                 }
             }
-            Token::Semicolon => {
-                current_property.clear();
-                current_value.clear();
-            }
-            Token::CloseBrace => {
-                current_selector.clear();
-            }
-            Token::Function(function) => {
-                if !current_selector.is_empty() && !current_property.is_empty() {
-                    current_value = function;
+            Ok(Token::StringValue(value)) => {
+                if !current_property.is_empty() {
+                    current_value = value;
                     parser.update_property(
                         current_selector.clone(),
                         current_property.clone(),
@@ -153,30 +191,57 @@ fn main() {
                     );
                 }
             }
-            Token::HexColor(hex) => {
-                if !current_selector.is_empty() && !current_property.is_empty() {
-                    current_value = hex;
-                    parser.update_property(
-                        current_selector.clone(),
-                        current_property.clone(),
-                        current_value.clone()
-                    );
-                }
+            Ok(Token::ChildCombinator) => {
+                current_selector.push_str(" > ");
             }
-            Token::NumericValue(percentage) => {
-                if !current_selector.is_empty() && !current_property.is_empty() {
-                    current_value = percentage;
-                    parser.update_property(
-                        current_selector.clone(),
-                        current_property.clone(),
-                        current_value.clone()
-                    );
-                }
+            _ => {
+                let err: cssparser_rs::Result<String> = Err((
+                    format!("Unexpected token: {:?}", lexer.slice()),
+                    lexer.span(),
+                ));
+
+                println!("{:?}", err.err());
             }
-            _ => {}
         }
     }
+    let minified = minify(parser);
+    // write to file
+    std::fs::write("minified.css", minified).unwrap();
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed);
-    println!("{}", parser);
+    //println!("{}", parser);
+}
+
+fn minify(parser: Parser) -> String {
+    /*
+    input would be something like:
+    .container {
+        border: solid 4px;
+        width: 100px;
+        height: 100px;
+    } 
+    output would be:
+    .container{border:solid 4px;width:100px;height:100px;}
+    just make sure there is a space when there are multiple values
+    */
+
+    let mut minified = String::new();
+
+    for (selector, properties) in &parser.selectors {
+        minified.push_str(&selector.split_whitespace().collect::<String>());
+        minified.push('{');
+
+        // check if there is more than one value
+
+        for (property, values) in &properties.properties {
+            minified.push_str(&property);
+            minified.push(':');
+            minified.push_str(&values.join(" "));
+            minified.push(';');
+        }
+
+        minified.push('}');
+    }
+
+    minified
 }
