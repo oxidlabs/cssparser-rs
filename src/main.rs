@@ -6,6 +6,8 @@ use std::sync::{ Arc, Mutex, mpsc };
 use std::thread;
 use std::io::Write;
 
+use bumpalo::{ Bump, collections::String };
+
 use cssparser_rs::Token;
 use logos::{ Lexer, Logos };
 
@@ -13,47 +15,52 @@ use rand::{ thread_rng, Rng };
 use rand::distributions::Alphanumeric;
 
 #[derive(Clone)]
-struct Parser {
-    selectors: HashMap<Vec<u8>, Properties>,
+struct Parser<'a> {
+    selectors: HashMap<String<'a>, Properties<'a>>,
 }
 
 #[derive(Debug, Clone)]
-struct Properties {
-    properties: HashMap<Vec<u8>, Vec<Vec<u8>>>,
+struct Properties<'a> {
+    properties: HashMap<String<'a>, Vec<String<'a>>>,
 }
 
-impl Parser {
+impl<'a> Parser<'a> {
     fn new() -> Self {
         Self {
             selectors: HashMap::new(),
         }
     }
 
-    fn create_selector(&mut self, selector: Vec<u8>) {
+    fn create_selector(&mut self, selector: String<'a>) {
         self.selectors.insert(selector, Properties::new());
     }
 
-    fn add_property(&mut self, selector: Vec<u8>, property: Vec<u8>, value: Option<Vec<u8>>) {
+    fn add_property(
+        &mut self,
+        selector: String<'a>,
+        property: String<'a>,
+        value: Option<String<'a>>
+    ) {
         if self.selectors.contains_key(&selector) {
             self.selectors.get_mut(&selector).unwrap().insert(property, value);
         }
     }
 
-    fn update_property(&mut self, selector: Vec<u8>, property: Vec<u8>, value: Vec<u8>) {
+    fn update_property(&mut self, selector: String<'a>, property: String<'a>, value: String<'a>) {
         if self.selectors.contains_key(&selector) {
             self.selectors.get_mut(&selector).unwrap().insert(property, Some(value));
         }
     }
 }
 
-impl Properties {
+impl<'a> Properties<'a> {
     fn new() -> Self {
         Self {
             properties: HashMap::new(),
         }
     }
 
-    fn insert(&mut self, property: Vec<u8>, value: Option<Vec<u8>>) {
+    fn insert(&mut self, property: String<'a>, value: Option<String<'a>>) {
         if self.properties.contains_key(&property) {
             if let Some(prop) = self.properties.get_mut(&property) {
                 if let Some(value) = value {
@@ -71,20 +78,20 @@ impl Properties {
         }
     }
 
-    fn get(&self, property: &[u8]) -> Option<&Vec<Vec<u8>>> {
+    fn get(&self, property: &String<'a>) -> Option<&Vec<String<'a>>> {
         self.properties.get(property)
     }
 
-    fn get_mut(&mut self, property: &[u8]) -> Option<&mut Vec<Vec<u8>>> {
+    fn get_mut(&mut self, property: &String<'a>) -> Option<&mut Vec<String<'a>>> {
         self.properties.get_mut(property)
     }
 
-    fn remove(&mut self, property: &[u8]) -> Option<Vec<Vec<u8>>> {
+    fn remove(&mut self, property: &String<'a>) -> Option<Vec<String<'a>>> {
         self.properties.remove(property)
     }
 }
 
-impl Display for Parser {
+/* impl Display for Parser {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         for (selector, properties) in &self.selectors {
             writeln!(f, "{} {{", std::str::from_utf8(selector).unwrap_or_default())?;
@@ -103,22 +110,23 @@ impl Display for Parser {
 
         Ok(())
     }
-}
+} */
 
-fn parse_chunk(chunk: &str, parser: &mut Parser) {
+fn parse_chunk<'a>(chunk: &str, parser: &mut Parser<'a>, bump: &'a Bump) {
     let mut lexer = Token::lexer(chunk);
-    let mut current_selector = Vec::with_capacity(1024);
-    let mut current_property: Vec<u8> = Vec::with_capacity(1024);
-    let mut current_value: Vec<u8> = Vec::with_capacity(1024);
+
+    let mut current_selector = String::new_in(&bump);
+    let mut current_property = String::new_in(&bump);
+    let mut current_value = String::new_in(&bump);
+
     while let Some(token) = lexer.next() {
         match token {
             Ok(Token::Value(value)) => {
                 if current_selector.is_empty() {
-                    current_selector.write(value.as_bytes());
+                    current_selector = String::from_str_in(value, &bump);
                 } else if !current_property.is_empty() {
                     // replace current_value with value
-                    current_value.clear();
-                    current_value.write(value.as_bytes());
+                    current_value = String::from_str_in(value, &bump);
                     parser.update_property(
                         current_selector.clone(),
                         current_property.clone(),
@@ -126,18 +134,18 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                     );
                 } else {
                     // extend current_selector with value
-                    current_selector.write(value.as_bytes());
+                    current_selector.push_str(value);
                 }
             }
-            Ok(Token::PseudoClass(pseudo)) | Ok(Token::PseudoElement(pseudo)) => {
-                current_selector.write(pseudo.as_bytes());
-            }
-            Ok(Token::IdSelector(value)) | Ok(Token::ClassSelector(value)) => {
-                current_selector.write(value.as_bytes());
+            | Ok(Token::PseudoClass(value))
+            | Ok(Token::PseudoElement(value))
+            | Ok(Token::AttributeSelector(value))
+            | Ok(Token::IdSelector(value))
+            | Ok(Token::ClassSelector(value)) => {
+                current_selector.push_str(value);
             }
             Ok(Token::Property(property)) => {
-                current_property.clear();
-                current_property.write(property.as_bytes());
+                current_property = String::from_str_in(property, &bump);
                 parser.add_property(current_selector.clone(), current_property.clone(), None);
             }
             Ok(Token::OpenBrace) => {
@@ -152,21 +160,11 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                 current_property.clear();
                 current_value.clear();
             }
-            Ok(Token::NumericValue(value)) => {
+            | Ok(Token::NumericValue(value))
+            | Ok(Token::StringValue(value))
+            | Ok(Token::HexColor(value)) => {
                 if !current_property.is_empty() {
-                    current_value.clear();
-                    current_value.write(value.as_bytes());
-                    parser.update_property(
-                        current_selector.clone(),
-                        current_property.clone(),
-                        current_value.clone()
-                    );
-                }
-            }
-            Ok(Token::StringValue(value)) => {
-                if !current_property.is_empty() {
-                    current_value.clear();
-                    current_value.write(value.as_bytes());
+                    current_value = String::from_str_in(value, &bump);
                     parser.update_property(
                         current_selector.clone(),
                         current_property.clone(),
@@ -175,7 +173,7 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                 }
             }
             Ok(Token::ChildCombinator) => {
-                current_selector.write(b" > ");
+                current_selector.push('>');
             }
             Ok(Token::Function(value)) => {
                 if !current_property.is_empty() {
@@ -200,8 +198,7 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                                     .clamp(0.0, 1.0) * 255.0
                             ).round() as u8
                         );
-                        current_value.clear();
-                        current_value.write(hex.as_bytes());
+                        current_value = String::from_str_in(hex.as_str(), &bump);
                         parser.update_property(
                             current_selector.clone(),
                             current_property.clone(),
@@ -216,8 +213,7 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                             .collect::<Vec<u8>>();
 
                         let hex = format!("#{:02x}{:02x}{:02x}", values[0], values[1], values[2]);
-                        current_value.clear();
-                        current_value.write(hex.as_bytes());
+                        current_value = String::from_str_in(hex.as_str(), &bump);
                         parser.update_property(
                             current_selector.clone(),
                             current_property.clone(),
@@ -267,8 +263,7 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                         let b = ((b + m) * 255.0).round() as u8;
 
                         let hex = format!("#{:02x}{:02x}{:02x}{:02x}", r, g, b, (a * 255.0) as u8);
-                        current_value.clear();
-                        current_value.write(hex.as_bytes());
+                        current_value = String::from_str_in(hex.as_str(), &bump);
                         parser.update_property(
                             current_selector.clone(),
                             current_property.clone(),
@@ -316,16 +311,14 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                         let b = ((b + m) * 255.0).round() as u8;
 
                         let hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
-                        current_value.clear();
-                        current_value.write(hex.as_bytes());
+                        current_value = String::from_str_in(hex.as_str(), &bump);
                         parser.update_property(
                             current_selector.clone(),
                             current_property.clone(),
                             current_value.clone()
                         );
                     } else {
-                        current_value.clear();
-                        current_value.write(value.as_bytes());
+                        current_value = String::from_str_in(value, &bump);
                         parser.update_property(
                             current_selector.clone(),
                             current_property.clone(),
@@ -337,25 +330,11 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
             Ok(Token::Comment) => {
                 // ignore comments
             }
-            Ok(Token::HexColor(value)) => {
-                if !current_property.is_empty() {
-                    current_value.clear();
-                    current_value.write(value.as_bytes());
-                    parser.update_property(
-                        current_selector.clone(),
-                        current_property.clone(),
-                        current_value.clone()
-                    );
-                }
-            }
-            Ok(Token::AttributeSelector(value)) => {
-                current_selector.write(value.as_bytes());
-            }
             Ok(Token::Comma) => {
                 if current_property.is_empty() {
-                    current_selector.write(b",");
+                    current_selector.push(',');
                 } else {
-                    current_value.write(b",");
+                    current_value.push(',');
                 }
             }
             _ => {
@@ -373,10 +352,12 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
 fn main() {
     // Read the css file
     let css = std::fs::read_to_string("bootstrap-4.css").expect("Failed to read CSS file");
+    let bump = Bump::new();
+
     let mut parser = Parser::new();
 
     let start = std::time::Instant::now();
-    parse_chunk(css.as_str(), &mut parser);
+    parse_chunk(css.as_str(), &mut parser, &bump);
 
     /*     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed);

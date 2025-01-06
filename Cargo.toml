@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 logos = "0.15.0"
 rand = "0.8.5"
+bumpalo = { version = "3.16.0", features = ["collections"] }
 
 [profile.release]
 debug = true
