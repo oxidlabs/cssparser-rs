@@ -1,9 +1,10 @@
 #![allow(unused)]
 
 use core::fmt;
-use std::{ collections::HashMap, fmt::{ Display, Formatter } };
+use std::{ collections::HashMap, fmt::{ Display, Formatter }, fs::File, io::BufWriter };
 use std::sync::{ Arc, Mutex, mpsc };
 use std::thread;
+use std::io::Write;
 
 use cssparser_rs::Token;
 use logos::{ Lexer, Logos };
@@ -13,12 +14,12 @@ use rand::distributions::Alphanumeric;
 
 #[derive(Clone)]
 struct Parser {
-    selectors: HashMap<String, Properties>,
+    selectors: HashMap<Vec<u8>, Properties>,
 }
 
 #[derive(Debug, Clone)]
 struct Properties {
-    properties: HashMap<String, Vec<String>>,
+    properties: HashMap<Vec<u8>, Vec<Vec<u8>>>,
 }
 
 impl Parser {
@@ -28,17 +29,17 @@ impl Parser {
         }
     }
 
-    fn create_selector(&mut self, selector: String) {
+    fn create_selector(&mut self, selector: Vec<u8>) {
         self.selectors.insert(selector, Properties::new());
     }
 
-    fn add_property(&mut self, selector: String, property: String, value: Option<String>) {
+    fn add_property(&mut self, selector: Vec<u8>, property: Vec<u8>, value: Option<Vec<u8>>) {
         if self.selectors.contains_key(&selector) {
             self.selectors.get_mut(&selector).unwrap().insert(property, value);
         }
     }
 
-    fn update_property(&mut self, selector: String, property: String, value: String) {
+    fn update_property(&mut self, selector: Vec<u8>, property: Vec<u8>, value: Vec<u8>) {
         if self.selectors.contains_key(&selector) {
             self.selectors.get_mut(&selector).unwrap().insert(property, Some(value));
         }
@@ -52,15 +53,14 @@ impl Properties {
         }
     }
 
-    fn insert(&mut self, property: String, value: Option<String>) {
+    fn insert(&mut self, property: Vec<u8>, value: Option<Vec<u8>>) {
         if self.properties.contains_key(&property) {
-            // if this fails print the property and value
             if let Some(prop) = self.properties.get_mut(&property) {
                 if let Some(value) = value {
                     prop.push(value);
                 }
             } else {
-                panic!("Failed to insert property: {} with value: {:?}", property, value);
+                panic!("Failed to insert property: {:?} with value: {:?}", property, value);
             }
         } else {
             if let Some(value) = value {
@@ -71,15 +71,15 @@ impl Properties {
         }
     }
 
-    fn get(&self, property: &str) -> Option<&Vec<String>> {
+    fn get(&self, property: &[u8]) -> Option<&Vec<Vec<u8>>> {
         self.properties.get(property)
     }
 
-    fn get_mut(&mut self, property: &str) -> Option<&mut Vec<String>> {
+    fn get_mut(&mut self, property: &[u8]) -> Option<&mut Vec<Vec<u8>>> {
         self.properties.get_mut(property)
     }
 
-    fn remove(&mut self, property: &str) -> Option<Vec<String>> {
+    fn remove(&mut self, property: &[u8]) -> Option<Vec<Vec<u8>>> {
         self.properties.remove(property)
     }
 }
@@ -87,10 +87,15 @@ impl Properties {
 impl Display for Parser {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         for (selector, properties) in &self.selectors {
-            writeln!(f, "{} {{", selector)?;
+            writeln!(f, "{} {{", std::str::from_utf8(selector).unwrap_or_default())?;
 
             for (property, values) in &properties.properties {
-                writeln!(f, "  {}: {};", property, values.join(" "))?;
+                let prop = std::str::from_utf8(property).unwrap_or_default();
+                let vals: Vec<&str> = values
+                    .iter()
+                    .map(|v| std::str::from_utf8(v).unwrap_or_default())
+                    .collect();
+                writeln!(f, "  {}: {};", prop, vals.join(" "))?;
             }
 
             writeln!(f, "}}")?;
@@ -100,45 +105,43 @@ impl Display for Parser {
     }
 }
 
-fn parse_chunk(chunk: &str, parser: Arc<Mutex<Parser>>) {
+fn parse_chunk(chunk: &str, parser: &mut Parser) {
     let mut lexer = Token::lexer(chunk);
-    let mut current_selector = String::new();
-    let mut current_property = String::new();
-    let mut current_value = String::new();
+    let mut current_selector = Vec::with_capacity(1024);
+    let mut current_property: Vec<u8> = Vec::with_capacity(1024);
+    let mut current_value: Vec<u8> = Vec::with_capacity(1024);
     while let Some(token) = lexer.next() {
         match token {
             Ok(Token::Value(value)) => {
                 if current_selector.is_empty() {
-                    current_selector = value.to_string();
+                    current_selector.write(value.as_bytes());
                 } else if !current_property.is_empty() {
-                    current_value = value.to_string();
-                    parser
-                        .lock()
-                        .unwrap()
-                        .update_property(
-                            current_selector.clone(),
-                            current_property.clone(),
-                            current_value.clone()
-                        );
+                    // replace current_value with value
+                    current_value.clear();
+                    current_value.write(value.as_bytes());
+                    parser.update_property(
+                        current_selector.clone(),
+                        current_property.clone(),
+                        current_value.clone()
+                    );
                 } else {
-                    current_selector.push_str(&value);
+                    // extend current_selector with value
+                    current_selector.write(value.as_bytes());
                 }
             }
             Ok(Token::PseudoClass(pseudo)) | Ok(Token::PseudoElement(pseudo)) => {
-                current_selector.push_str(&pseudo);
+                current_selector.write(pseudo.as_bytes());
             }
             Ok(Token::IdSelector(value)) | Ok(Token::ClassSelector(value)) => {
-                current_selector = value.to_string();
+                current_selector.write(value.as_bytes());
             }
             Ok(Token::Property(property)) => {
-                current_property = property.to_string();
-                parser
-                    .lock()
-                    .unwrap()
-                    .add_property(current_selector.clone(), current_property.clone(), None);
+                current_property.clear();
+                current_property.write(property.as_bytes());
+                parser.add_property(current_selector.clone(), current_property.clone(), None);
             }
             Ok(Token::OpenBrace) => {
-                parser.lock().unwrap().create_selector(current_selector.clone());
+                parser.create_selector(current_selector.clone());
             }
             Ok(Token::CloseBrace) => {
                 current_selector.clear();
@@ -151,32 +154,28 @@ fn parse_chunk(chunk: &str, parser: Arc<Mutex<Parser>>) {
             }
             Ok(Token::NumericValue(value)) => {
                 if !current_property.is_empty() {
-                    current_value = value.to_string();
-                    parser
-                        .lock()
-                        .unwrap()
-                        .update_property(
-                            current_selector.clone(),
-                            current_property.clone(),
-                            current_value.clone()
-                        );
+                    current_value.clear();
+                    current_value.write(value.as_bytes());
+                    parser.update_property(
+                        current_selector.clone(),
+                        current_property.clone(),
+                        current_value.clone()
+                    );
                 }
             }
             Ok(Token::StringValue(value)) => {
                 if !current_property.is_empty() {
-                    current_value = value.to_string();
-                    parser
-                        .lock()
-                        .unwrap()
-                        .update_property(
-                            current_selector.clone(),
-                            current_property.clone(),
-                            current_value.clone()
-                        );
+                    current_value.clear();
+                    current_value.write(value.as_bytes());
+                    parser.update_property(
+                        current_selector.clone(),
+                        current_property.clone(),
+                        current_value.clone()
+                    );
                 }
             }
             Ok(Token::ChildCombinator) => {
-                current_selector.push_str(" > ");
+                current_selector.write(b" > ");
             }
             Ok(Token::Function(value)) => {
                 if !current_property.is_empty() {
@@ -201,15 +200,13 @@ fn parse_chunk(chunk: &str, parser: Arc<Mutex<Parser>>) {
                                     .clamp(0.0, 1.0) * 255.0
                             ).round() as u8
                         );
-                        current_value = hex;
-                        parser
-                            .lock()
-                            .unwrap()
-                            .update_property(
-                                current_selector.clone(),
-                                current_property.clone(),
-                                current_value.clone()
-                            );
+                        current_value.clear();
+                        current_value.write(hex.as_bytes());
+                        parser.update_property(
+                            current_selector.clone(),
+                            current_property.clone(),
+                            current_value.clone()
+                        );
                     } else if value.starts_with("rgb") {
                         let mut values = value
                             .trim_start_matches("rgb(")
@@ -219,15 +216,13 @@ fn parse_chunk(chunk: &str, parser: Arc<Mutex<Parser>>) {
                             .collect::<Vec<u8>>();
 
                         let hex = format!("#{:02x}{:02x}{:02x}", values[0], values[1], values[2]);
-                        current_value = hex;
-                        parser
-                            .lock()
-                            .unwrap()
-                            .update_property(
-                                current_selector.clone(),
-                                current_property.clone(),
-                                current_value.clone()
-                            );
+                        current_value.clear();
+                        current_value.write(hex.as_bytes());
+                        parser.update_property(
+                            current_selector.clone(),
+                            current_property.clone(),
+                            current_value.clone()
+                        );
                     } else if value.starts_with("hsla") {
                         let mut values = value
                             .trim_start_matches("hsla(")
@@ -272,15 +267,13 @@ fn parse_chunk(chunk: &str, parser: Arc<Mutex<Parser>>) {
                         let b = ((b + m) * 255.0).round() as u8;
 
                         let hex = format!("#{:02x}{:02x}{:02x}{:02x}", r, g, b, (a * 255.0) as u8);
-                        current_value = hex;
-                        parser
-                            .lock()
-                            .unwrap()
-                            .update_property(
-                                current_selector.clone(),
-                                current_property.clone(),
-                                current_value.clone()
-                            );
+                        current_value.clear();
+                        current_value.write(hex.as_bytes());
+                        parser.update_property(
+                            current_selector.clone(),
+                            current_property.clone(),
+                            current_value.clone()
+                        );
                     } else if value.starts_with("hsl") {
                         let mut values = value
                             .trim_start_matches("hsl(")
@@ -323,25 +316,21 @@ fn parse_chunk(chunk: &str, parser: Arc<Mutex<Parser>>) {
                         let b = ((b + m) * 255.0).round() as u8;
 
                         let hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
-                        current_value = hex;
-                        parser
-                            .lock()
-                            .unwrap()
-                            .update_property(
-                                current_selector.clone(),
-                                current_property.clone(),
-                                current_value.clone()
-                            );
+                        current_value.clear();
+                        current_value.write(hex.as_bytes());
+                        parser.update_property(
+                            current_selector.clone(),
+                            current_property.clone(),
+                            current_value.clone()
+                        );
                     } else {
-                        current_value = value.to_string();
-                        parser
-                            .lock()
-                            .unwrap()
-                            .update_property(
-                                current_selector.clone(),
-                                current_property.clone(),
-                                current_value.clone()
-                            );
+                        current_value.clear();
+                        current_value.write(value.as_bytes());
+                        parser.update_property(
+                            current_selector.clone(),
+                            current_property.clone(),
+                            current_value.clone()
+                        );
                     }
                 }
             }
@@ -350,29 +339,25 @@ fn parse_chunk(chunk: &str, parser: Arc<Mutex<Parser>>) {
             }
             Ok(Token::HexColor(value)) => {
                 if !current_property.is_empty() {
-                    current_value = value.to_string();
-                    parser
-                        .lock()
-                        .unwrap()
-                        .update_property(
-                            current_selector.clone(),
-                            current_property.clone(),
-                            current_value.clone()
-                        );
+                    current_value.clear();
+                    current_value.write(value.as_bytes());
+                    parser.update_property(
+                        current_selector.clone(),
+                        current_property.clone(),
+                        current_value.clone()
+                    );
                 }
             }
             Ok(Token::AttributeSelector(value)) => {
-                current_selector.push_str(&value);
+                current_selector.write(value.as_bytes());
             }
             Ok(Token::Comma) => {
-                // if property is empty then push to selector else push to value
                 if current_property.is_empty() {
-                    current_selector.push(',');
+                    current_selector.write(b",");
                 } else {
-                    current_value.push(',');
+                    current_value.write(b",");
                 }
             }
-
             _ => {
                 /* let err: cssparser_rs::Result<String> = Err((
                     format!("Unexpected token: {:?}", lexer.slice()),
@@ -388,53 +373,22 @@ fn parse_chunk(chunk: &str, parser: Arc<Mutex<Parser>>) {
 fn main() {
     // Read the css file
     let css = std::fs::read_to_string("bootstrap-4.css").expect("Failed to read CSS file");
-    let num_threads = 2; // Number of threads to use
-    let parser = Arc::new(Mutex::new(Parser::new()));
-
-    // Split CSS into rules
-    let rules: Vec<&str> = css.split('}').collect();
-    let chunk_size = (rules.len() + num_threads - 1) / num_threads; // Calculate chunk size
-
-    let (tx, rx) = mpsc::channel();
-    let mut handles = vec![];
+    let mut parser = Parser::new();
 
     let start = std::time::Instant::now();
+    parse_chunk(css.as_str(), &mut parser);
 
-    for i in 0..num_threads {
-        let start = i * chunk_size;
-        let end = std::cmp::min((i + 1) * chunk_size, rules.len());
-        let chunk = rules[start..end].join("}");
-        let parser = Arc::clone(&parser);
-        let tx = tx.clone();
-
-        let handle = thread::spawn(move || {
-            parse_chunk(&chunk, parser);
-            tx.send(()).expect("Failed to send completion signal");
-        });
-
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        handle.join().expect("Thread panicked");
-    }
-
-    // Ensure all threads have completed
-    for _ in 0..num_threads {
-        rx.recv().expect("Failed to receive completion signal");
-    }
-
-    let elapsed = start.elapsed();
+    /*     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed);
     let minified = minify(parser.lock().unwrap().clone());
     // write to file
-    std::fs::write("minified.css", minified).unwrap();
+    std::fs::write("minified.css", minified).unwrap(); */
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed);
-    //println!("{}", parser);
+    //println!("{}", parser.lock().unwrap());
 }
 
-fn minify(parser: Parser) -> String {
+/* fn minify(parser: Parser) -> String {
     let mut property_map: HashMap<String, Vec<String>> = HashMap::new();
     let mut minified = String::new();
 
@@ -460,4 +414,4 @@ fn minify(parser: Parser) -> String {
     }
 
     minified
-}
+} */
