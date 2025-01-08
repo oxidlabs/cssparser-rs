@@ -19,11 +19,12 @@ struct Parser {
 
 #[derive(Debug, Clone)]
 struct Properties {
-    properties: HashMap<Vec<u8>, Vec<Vec<u8>>>,
+    properties: HashMap<Vec<u8>, Vec<&'static [u8]>>,
 }
 
 impl Parser {
     fn new() -> Self {
+
         Self {
             selectors: HashMap::new(),
         }
@@ -33,15 +34,15 @@ impl Parser {
         self.selectors.insert(selector, Properties::new());
     }
 
-    fn add_property(&mut self, selector: Vec<u8>, property: Vec<u8>, value: Option<Vec<u8>>) {
-        if self.selectors.contains_key(&selector) {
-            self.selectors.get_mut(&selector).unwrap().insert(property, value);
+    fn add_property(&mut self, selector: &Vec<u8>, property: &Vec<u8>, value: Option<&'static [u8]>) {
+        if self.selectors.contains_key(selector) {
+            self.selectors.get_mut(selector).unwrap().insert(property, value);
         }
     }
 
-    fn update_property(&mut self, selector: Vec<u8>, property: Vec<u8>, value: Vec<u8>) {
-        if self.selectors.contains_key(&selector) {
-            self.selectors.get_mut(&selector).unwrap().insert(property, Some(value));
+    fn update_property(&mut self, selector: &Vec<u8>, property: &Vec<u8>, value: &'static [u8]) {
+        if self.selectors.contains_key(selector) {
+            self.selectors.get_mut(selector).unwrap().insert(property, Some(value));
         }
     }
 }
@@ -53,9 +54,9 @@ impl Properties {
         }
     }
 
-    fn insert(&mut self, property: Vec<u8>, value: Option<Vec<u8>>) {
-        if self.properties.contains_key(&property) {
-            if let Some(prop) = self.properties.get_mut(&property) {
+    fn insert(&mut self, property: &Vec<u8>, value: Option<&'static [u8]>) {
+        if self.properties.contains_key(property) {
+            if let Some(prop) = self.properties.get_mut(property) {
                 if let Some(value) = value {
                     prop.push(value);
                 }
@@ -64,22 +65,23 @@ impl Properties {
             }
         } else {
             if let Some(value) = value {
-                self.properties.insert(property, vec![value]);
+                self.properties.insert(property.clone(), vec![value]);
             } else {
-                self.properties.insert(property, vec![]);
+                
+                self.properties.insert(property.clone(), vec![]);
             }
         }
     }
 
-    fn get(&self, property: &[u8]) -> Option<&Vec<Vec<u8>>> {
+    fn get(&self, property: &[u8]) -> Option<&Vec<&'static [u8]>> {
         self.properties.get(property)
     }
 
-    fn get_mut(&mut self, property: &[u8]) -> Option<&mut Vec<Vec<u8>>> {
+    fn get_mut(&mut self, property: &[u8]) -> Option<&mut Vec<&'static [u8]>> {
         self.properties.get_mut(property)
     }
 
-    fn remove(&mut self, property: &[u8]) -> Option<Vec<Vec<u8>>> {
+    fn remove(&mut self, property: &[u8]) -> Option<Vec<&'static [u8]>> {
         self.properties.remove(property)
     }
 }
@@ -105,8 +107,14 @@ impl Display for Parser {
     }
 }
 
-fn parse_chunk(chunk: &str, parser: &mut Parser) {
-    let mut lexer = Token::lexer(chunk);
+fn main() {
+    // Read the css file
+    let css = include_str!("../bootstrap-4.css");
+    let mut parser = Parser::new();
+
+    let start = std::time::Instant::now();
+
+    let mut lexer = Token::lexer(css);
     let mut current_selector = Vec::with_capacity(1024);
     let mut current_property: Vec<u8> = Vec::with_capacity(1024);
     let mut current_value: Vec<u8> = Vec::with_capacity(1024);
@@ -117,12 +125,10 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                     current_selector.write(value.as_bytes());
                 } else if !current_property.is_empty() {
                     // replace current_value with value
-                    current_value.clear();
-                    current_value.write(value.as_bytes());
                     parser.update_property(
-                        current_selector.clone(),
-                        current_property.clone(),
-                        current_value.clone()
+                        &current_selector,
+                        &current_property,
+                        value.as_bytes()
                     );
                 } else {
                     // extend current_selector with value
@@ -138,7 +144,7 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
             Ok(Token::Property(property)) => {
                 current_property.clear();
                 current_property.write(property.as_bytes());
-                parser.add_property(current_selector.clone(), current_property.clone(), None);
+                parser.add_property(&current_selector, &current_property, None);
             }
             Ok(Token::OpenBrace) => {
                 parser.create_selector(current_selector.clone());
@@ -154,23 +160,19 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
             }
             Ok(Token::NumericValue(value)) => {
                 if !current_property.is_empty() {
-                    current_value.clear();
-                    current_value.write(value.as_bytes());
                     parser.update_property(
-                        current_selector.clone(),
-                        current_property.clone(),
-                        current_value.clone()
+                        &current_selector,
+                        &current_property,
+                        value.as_bytes()
                     );
                 }
             }
             Ok(Token::StringValue(value)) => {
                 if !current_property.is_empty() {
-                    current_value.clear();
-                    current_value.write(value.as_bytes());
                     parser.update_property(
-                        current_selector.clone(),
-                        current_property.clone(),
-                        current_value.clone()
+                        &current_selector,
+                        &current_property,
+                        value.as_bytes()
                     );
                 }
             }
@@ -178,7 +180,7 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                 current_selector.write(b" > ");
             }
             Ok(Token::Function(value)) => {
-                if !current_property.is_empty() {
+                /* if !current_property.is_empty() {
                     // check if the value is rgb or rgba if so, convert it to hex
                     if value.starts_with("rgba") {
                         let mut values = value
@@ -200,12 +202,10 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                                     .clamp(0.0, 1.0) * 255.0
                             ).round() as u8
                         );
-                        current_value.clear();
-                        current_value.write(hex.as_bytes());
                         parser.update_property(
-                            current_selector.clone(),
-                            current_property.clone(),
-                            current_value.clone()
+                            &current_selector,
+                            &current_property,
+                            hex.as_bytes()
                         );
                     } else if value.starts_with("rgb") {
                         let mut values = value
@@ -216,12 +216,10 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                             .collect::<Vec<u8>>();
 
                         let hex = format!("#{:02x}{:02x}{:02x}", values[0], values[1], values[2]);
-                        current_value.clear();
-                        current_value.write(hex.as_bytes());
                         parser.update_property(
-                            current_selector.clone(),
-                            current_property.clone(),
-                            current_value.clone()
+                            &current_selector,
+                            &current_property,
+                            hex.as_bytes()
                         );
                     } else if value.starts_with("hsla") {
                         let mut values = value
@@ -267,12 +265,10 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                         let b = ((b + m) * 255.0).round() as u8;
 
                         let hex = format!("#{:02x}{:02x}{:02x}{:02x}", r, g, b, (a * 255.0) as u8);
-                        current_value.clear();
-                        current_value.write(hex.as_bytes());
                         parser.update_property(
-                            current_selector.clone(),
-                            current_property.clone(),
-                            current_value.clone()
+                            &current_selector,
+                            &current_property,
+                            hex.as_bytes()
                         );
                     } else if value.starts_with("hsl") {
                         let mut values = value
@@ -316,35 +312,32 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
                         let b = ((b + m) * 255.0).round() as u8;
 
                         let hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
-                        current_value.clear();
-                        current_value.write(hex.as_bytes());
+
                         parser.update_property(
-                            current_selector.clone(),
-                            current_property.clone(),
-                            current_value.clone()
+                            &current_selector,
+                            &current_property,
+                            hex.as_bytes()
                         );
                     } else {
-                        current_value.clear();
-                        current_value.write(value.as_bytes());
+
                         parser.update_property(
-                            current_selector.clone(),
-                            current_property.clone(),
-                            current_value.clone()
+                            &current_selector,
+                            &current_property,
+                            value.as_bytes()
                         );
                     }
-                }
+                } */
             }
             Ok(Token::Comment) => {
                 // ignore comments
             }
             Ok(Token::HexColor(value)) => {
                 if !current_property.is_empty() {
-                    current_value.clear();
-                    current_value.write(value.as_bytes());
+
                     parser.update_property(
-                        current_selector.clone(),
-                        current_property.clone(),
-                        current_value.clone()
+                        &current_selector,
+                        &current_property,
+                        value.as_bytes()
                     );
                 }
             }
@@ -368,15 +361,6 @@ fn parse_chunk(chunk: &str, parser: &mut Parser) {
             }
         }
     }
-}
-
-fn main() {
-    // Read the css file
-    let css = std::fs::read_to_string("bootstrap-4.css").expect("Failed to read CSS file");
-    let mut parser = Parser::new();
-
-    let start = std::time::Instant::now();
-    parse_chunk(css.as_str(), &mut parser);
 
     /*     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed);
