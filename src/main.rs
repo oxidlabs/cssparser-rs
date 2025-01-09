@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use core::fmt;
 use std::{ collections::HashMap, fmt::{ Display, Formatter }, fs::File, io::BufWriter };
 use std::sync::{ Arc, Mutex, mpsc };
@@ -12,36 +10,48 @@ use logos::{ Lexer, Logos };
 use rand::{ thread_rng, Rng };
 use rand::distributions::Alphanumeric;
 
+use indexmap::IndexMap;
+use std::mem;
+use std::ops::Range;
+
 #[derive(Clone)]
 struct Parser {
-    selectors: HashMap<Vec<u8>, Properties>,
+    data: Vec<u8>, // Shared buffer for all strings
+    selectors: IndexMap<Range<usize>, Properties>, // Ranges into data buffer
 }
 
 #[derive(Debug, Clone)]
 struct Properties {
-    properties: HashMap<Vec<u8>, Vec<&'static [u8]>>,
+    properties: IndexMap<Range<usize>, Range<usize>>, // Property -> Value ranges
 }
 
 impl Parser {
     fn new() -> Self {
         Self {
-            selectors: HashMap::new(),
+            data: Vec::with_capacity(1024 * 64), // Pre-allocate 64KB
+            selectors: IndexMap::new(),
         }
     }
 
-    fn create_selector(&mut self, selector: Vec<u8>) {
-        self.selectors.entry(selector).or_insert_with(Properties::new);
+    fn store_bytes(&mut self, bytes: &[u8]) -> Range<usize> {
+        let start = self.data.len();
+        self.data.extend_from_slice(bytes);
+        start..self.data.len()
     }
 
-    fn add_property(&mut self, selector: &[u8], property: &[u8], value: Option<&'static [u8]>) {
-        if let Some(properties) = self.selectors.get_mut(selector) {
-            properties.insert(property, value);
-        }
-    }
+    fn commit_buffer(&mut self, buffer: &SelectorBuffer) {
+        if !buffer.selector.is_empty() {
+            let selector_range = self.store_bytes(&buffer.selector);
+            let mut props = Properties::new();
 
-    fn update_property(&mut self, selector: &[u8], property: &[u8], value: &'static [u8]) {
-        if let Some(properties) = self.selectors.get_mut(selector) {
-            properties.insert(property, Some(value));
+            // Store all properties and values in shared buffer
+            for (prop, val) in &buffer.properties {
+                let prop_range = self.store_bytes(prop);
+                let val_range = self.store_bytes(val);
+                props.properties.insert(prop_range, val_range);
+            }
+
+            self.selectors.insert(selector_range, props);
         }
     }
 }
@@ -49,26 +59,52 @@ impl Parser {
 impl Properties {
     fn new() -> Self {
         Self {
-            properties: HashMap::new(),
+            properties: IndexMap::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct SelectorBuffer {
+    selector: Vec<u8>,
+    properties: Vec<(Vec<u8>, Vec<u8>)>,
+    current_property: Vec<u8>,
+    current_value: Vec<u8>,
+}
+
+impl SelectorBuffer {
+    fn new() -> Self {
+        Self {
+            selector: Vec::with_capacity(256), // Most selectors < 256 bytes
+            properties: Vec::with_capacity(32), // Most rules < 32 properties
+            current_property: Vec::with_capacity(64), // Properties rarely > 64 bytes
+            current_value: Vec::with_capacity(128), // Values rarely > 128 bytes
         }
     }
 
-    fn insert(&mut self, property: &[u8], value: Option<&'static [u8]>) {
-        self.properties.entry(property.to_vec()).or_insert_with(Vec::new).extend(value);
+    fn commit_property(&mut self) {
+        if !self.current_property.is_empty() && !self.current_value.is_empty() {
+            self.properties.push((
+                mem::take(&mut self.current_property),
+                mem::take(&mut self.current_value),
+            ));
+        }
     }
 }
 
 impl Display for Parser {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         for (selector, properties) in &self.selectors {
-            writeln!(f, "{} {{", std::str::from_utf8(selector).unwrap_or_default())?;
-            for (property, values) in &properties.properties {
-                let prop = std::str::from_utf8(property).unwrap_or_default();
-                let vals: Vec<&str> = values.iter().map(|v| std::str::from_utf8(v).unwrap_or_default()).collect();
-                writeln!(f, "  {}: {};", prop, vals.join(" "))?;
+            let selector = String::from_utf8_lossy(&self.data[selector.clone()]);
+            writeln!(f, "{}", selector)?;
+
+            for (property, value) in &properties.properties {
+                let property = String::from_utf8_lossy(&self.data[property.clone()]);
+                let value = String::from_utf8_lossy(&self.data[value.clone()]);
+                writeln!(f, "  {}: {};", property, value)?;
             }
-            writeln!(f, "}}")?;
         }
+
         Ok(())
     }
 }
@@ -77,254 +113,64 @@ fn main() {
     // Read the css file
     let css = include_str!("../bootstrap-4.css");
     let mut parser = Parser::new();
+    let mut buffer = SelectorBuffer::new();
 
     let start = std::time::Instant::now();
 
     let mut lexer = Token::lexer(css);
-    let mut current_selector = Vec::with_capacity(1024);
-    let mut current_property: Vec<u8> = Vec::with_capacity(1024);
-    let mut current_value: Vec<u8> = Vec::with_capacity(1024);
     while let Some(token) = lexer.next() {
         match token {
             Ok(Token::Value(value)) => {
-                if current_selector.is_empty() {
-                    current_selector.write(value.as_bytes());
-                } else if !current_property.is_empty() {
-                    // replace current_value with value
-                    parser.update_property(
-                        &current_selector,
-                        &current_property,
-                        value.as_bytes()
-                    );
+                if buffer.selector.is_empty() {
+                    buffer.selector.extend_from_slice(value.as_bytes());
+                } else if !buffer.current_property.is_empty() {
+                    buffer.current_value.extend_from_slice(value.as_bytes());
                 } else {
-                    // extend current_selector with value
-                    current_selector.write(value.as_bytes());
+                    buffer.selector.extend_from_slice(value.as_bytes());
                 }
             }
-            Ok(Token::PseudoClass(pseudo)) | Ok(Token::PseudoElement(pseudo)) => {
-                current_selector.write(pseudo.as_bytes());
-            }
-            Ok(Token::IdSelector(value)) | Ok(Token::ClassSelector(value)) => {
-                current_selector.write(value.as_bytes());
+            | Ok(Token::PseudoClass(pseudo))
+            | Ok(Token::PseudoElement(pseudo))
+            | Ok(Token::IdSelector(pseudo))
+            | Ok(Token::ClassSelector(pseudo))
+            | Ok(Token::AttributeSelector(pseudo)) => {
+                buffer.selector.extend_from_slice(pseudo.as_bytes());
             }
             Ok(Token::Property(property)) => {
-                current_property.clear();
-                current_property.write(property.as_bytes());
-                parser.add_property(&current_selector, &current_property, None);
+                buffer.commit_property();
+                buffer.current_property.extend_from_slice(property.as_bytes());
             }
             Ok(Token::OpenBrace) => {
-                parser.create_selector(current_selector.clone());
+                // Continue collecting properties
             }
             Ok(Token::CloseBrace) => {
-                current_selector.clear();
-                current_property.clear();
-                current_value.clear();
+                buffer.commit_property();
+                parser.commit_buffer(&buffer);
+                buffer = SelectorBuffer::new();
             }
             Ok(Token::Semicolon) => {
-                current_property.clear();
-                current_value.clear();
+                buffer.commit_property();
             }
-            Ok(Token::NumericValue(value)) => {
-                if !current_property.is_empty() {
-                    parser.update_property(
-                        &current_selector,
-                        &current_property,
-                        value.as_bytes()
-                    );
-                }
-            }
-            Ok(Token::StringValue(value)) => {
-                if !current_property.is_empty() {
-                    parser.update_property(
-                        &current_selector,
-                        &current_property,
-                        value.as_bytes()
-                    );
-                }
+            | Ok(Token::NumericValue(value))
+            | Ok(Token::StringValue(value))
+            | Ok(Token::HexColor(value))
+            | Ok(Token::Function(value)) => {
+                buffer.current_value.extend_from_slice(value.as_bytes());
             }
             Ok(Token::ChildCombinator) => {
-                current_selector.write(b" > ");
-            }
-            Ok(Token::Function(value)) => {
-                /* if !current_property.is_empty() {
-                    // check if the value is rgb or rgba if so, convert it to hex
-                    if value.starts_with("rgba") {
-                        let mut values = value
-                            .trim_start_matches("rgba(")
-                            .trim_end_matches(')')
-                            .split(',')
-                            .map(|v| v.trim())
-                            .collect::<Vec<&str>>();
-
-                        let hex = format!(
-                            "#{:02x}{:02x}{:02x}{:02x}",
-                            values[0].parse::<u8>().expect("Expected to parse red value"),
-                            values[1].parse::<u8>().expect("Expected to parse green value"),
-                            values[2].parse::<u8>().expect("Expected to parse blue value"),
-                            (
-                                values[3]
-                                    .parse::<f32>()
-                                    .expect("Expected to parse alpha value")
-                                    .clamp(0.0, 1.0) * 255.0
-                            ).round() as u8
-                        );
-                        parser.update_property(
-                            &current_selector,
-                            &current_property,
-                            hex.as_bytes()
-                        );
-                    } else if value.starts_with("rgb") {
-                        let mut values = value
-                            .trim_start_matches("rgb(")
-                            .trim_end_matches(')')
-                            .split(',')
-                            .map(|v| v.trim().parse::<u8>().unwrap())
-                            .collect::<Vec<u8>>();
-
-                        let hex = format!("#{:02x}{:02x}{:02x}", values[0], values[1], values[2]);
-                        parser.update_property(
-                            &current_selector,
-                            &current_property,
-                            hex.as_bytes()
-                        );
-                    } else if value.starts_with("hsla") {
-                        let mut values = value
-                            .trim_start_matches("hsla(")
-                            .trim_end_matches(')')
-                            .split(',')
-                            .map(|v| {
-                                let v = v.trim();
-                                if v.ends_with('%') {
-                                    v.trim_end_matches('%').parse::<f32>().unwrap()
-                                } else {
-                                    v.parse::<f32>().unwrap()
-                                }
-                            })
-                            .collect::<Vec<f32>>();
-
-                        let h = (values[0] % 360.0) / 360.0; // normalize h to 0-1 range
-                        let s = values[1] / 100.0;
-                        let l = values[2] / 100.0;
-                        let a = values[3].clamp(0.0, 1.0); // ensure alpha is between 0 and 1
-
-                        let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-                        let h_prime = h * 6.0;
-                        let x = c * (1.0 - ((h_prime % 2.0) - 1.0).abs());
-                        let m = l - c / 2.0;
-
-                        let (r, g, b) = if h_prime <= 1.0 {
-                            (c, x, 0.0)
-                        } else if h_prime <= 2.0 {
-                            (x, c, 0.0)
-                        } else if h_prime <= 3.0 {
-                            (0.0, c, x)
-                        } else if h_prime <= 4.0 {
-                            (0.0, x, c)
-                        } else if h_prime <= 5.0 {
-                            (x, 0.0, c)
-                        } else {
-                            (c, 0.0, x)
-                        };
-
-                        let r = ((r + m) * 255.0).round() as u8;
-                        let g = ((g + m) * 255.0).round() as u8;
-                        let b = ((b + m) * 255.0).round() as u8;
-
-                        let hex = format!("#{:02x}{:02x}{:02x}{:02x}", r, g, b, (a * 255.0) as u8);
-                        parser.update_property(
-                            &current_selector,
-                            &current_property,
-                            hex.as_bytes()
-                        );
-                    } else if value.starts_with("hsl") {
-                        let mut values = value
-                            .trim_start_matches("hsl(")
-                            .trim_end_matches(')')
-                            .split(',')
-                            .map(|v| {
-                                let v = v.trim();
-                                if v.ends_with('%') {
-                                    v.trim_end_matches('%').parse::<f32>().unwrap()
-                                } else {
-                                    v.parse::<f32>().unwrap()
-                                }
-                            })
-                            .collect::<Vec<f32>>();
-
-                        let h = (values[0] % 360.0) / 360.0; // normalize h to 0-1 range
-                        let s = values[1] / 100.0;
-                        let l = values[2] / 100.0;
-
-                        let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-                        let x = c * (1.0 - (((h * 6.0) % 2.0) - 1.0).abs());
-                        let m = l - c / 2.0;
-
-                        let (r, g, b) = if h < 1.0 / 6.0 {
-                            (c, x, 0.0)
-                        } else if h < 2.0 / 6.0 {
-                            (x, c, 0.0)
-                        } else if h < 3.0 / 6.0 {
-                            (0.0, c, x)
-                        } else if h < 4.0 / 6.0 {
-                            (0.0, x, c)
-                        } else if h < 5.0 / 6.0 {
-                            (x, 0.0, c)
-                        } else {
-                            (c, 0.0, x)
-                        };
-
-                        let r = ((r + m) * 255.0).round() as u8;
-                        let g = ((g + m) * 255.0).round() as u8;
-                        let b = ((b + m) * 255.0).round() as u8;
-
-                        let hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
-
-                        parser.update_property(
-                            &current_selector,
-                            &current_property,
-                            hex.as_bytes()
-                        );
-                    } else {
-
-                        parser.update_property(
-                            &current_selector,
-                            &current_property,
-                            value.as_bytes()
-                        );
-                    }
-                } */
+                buffer.selector.extend_from_slice(b" > ");
             }
             Ok(Token::Comment) => {
                 // ignore comments
             }
-            Ok(Token::HexColor(value)) => {
-                if !current_property.is_empty() {
-
-                    parser.update_property(
-                        &current_selector,
-                        &current_property,
-                        value.as_bytes()
-                    );
-                }
-            }
-            Ok(Token::AttributeSelector(value)) => {
-                current_selector.write(value.as_bytes());
-            }
             Ok(Token::Comma) => {
-                if current_property.is_empty() {
-                    current_selector.write(b",");
+                if buffer.current_property.is_empty() {
+                    buffer.selector.extend_from_slice(b",");
                 } else {
-                    current_value.write(b",");
+                    buffer.current_value.extend_from_slice(b",");
                 }
             }
-            _ => {
-                /* let err: cssparser_rs::Result<String> = Err((
-                    format!("Unexpected token: {:?}", lexer.slice()),
-                    lexer.span(),
-                ));
-
-                println!("{:?}", err.err()); */
-            }
+            _ => {} // Ignore unexpected tokens
         }
     }
 
@@ -335,7 +181,7 @@ fn main() {
     std::fs::write("minified.css", minified).unwrap(); */
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed);
-    //println!("{}", parser.lock().unwrap());
+    //println!("{}", parser);
 }
 
 /* fn minify(parser: Parser) -> String {

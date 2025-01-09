@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 logos = "0.15.0"
 rand = "0.8.5"
-hashbrown = "0.15"
+indexmap = "2.7.0"
 
 [profile.release]
 debug = "full"
