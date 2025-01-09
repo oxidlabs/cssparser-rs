@@ -166,9 +166,9 @@ fn main() {
             }
             Ok(Token::Comma) => {
                 if buffer.current_property.is_empty() {
-                    buffer.selector.extend_from_slice(b",");
+                    buffer.selector.push(b',');
                 } else {
-                    buffer.current_value.extend_from_slice(b",");
+                    buffer.current_value.push(b',');
                 }
             }
             _ => {} // Ignore unexpected tokens
