@@ -179,13 +179,7 @@ impl Display for Parser {
     }
 }
 
-fn main() {
-    parse_css();
-}
-
-pub fn parse_css() {
-    // Read the css file
-    let css = include_str!("../bootstrap-4.css");
+pub fn parse_css(css: &str) {
     let mut parser = Parser::new();
     let mut buffer = SelectorBuffer::new();
 

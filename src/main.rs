@@ -1,7 +1,8 @@
 use cssparser_rs::parse_css;
 
 fn main() {
-    parse_css();
+    let css = include_str!("../bootstrap-4.css");
+    parse_css(css);
 }
 
 /* fn minify(parser: Parser) -> String {
