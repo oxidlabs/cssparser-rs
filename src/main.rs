@@ -13,6 +13,7 @@ use rand::distributions::Alphanumeric;
 use indexmap::IndexMap;
 use std::mem;
 use std::ops::Range;
+use smallvec::SmallVec;
 
 #[derive(Clone)]
 struct Parser {
@@ -66,19 +67,19 @@ impl Properties {
 
 #[derive(Default)]
 struct SelectorBuffer {
-    selector: Vec<u8>,
-    properties: Vec<(Vec<u8>, Vec<u8>)>,
-    current_property: Vec<u8>,
-    current_value: Vec<u8>,
+    selector: SmallVec<[u8; 256]>,
+    properties: SmallVec<[(SmallVec<[u8; 64]>, SmallVec<[u8; 128]>); 32]>,
+    current_property: SmallVec<[u8; 64]>,
+    current_value: SmallVec<[u8; 128]>,
 }
 
 impl SelectorBuffer {
     fn new() -> Self {
         Self {
-            selector: Vec::with_capacity(256), // Most selectors < 256 bytes
-            properties: Vec::with_capacity(32), // Most rules < 32 properties
-            current_property: Vec::with_capacity(64), // Properties rarely > 64 bytes
-            current_value: Vec::with_capacity(128), // Values rarely > 128 bytes
+            selector: SmallVec::new(),
+            properties: SmallVec::new(),
+            current_property: SmallVec::new(),
+            current_value: SmallVec::new(),
         }
     }
 
