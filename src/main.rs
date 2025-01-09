@@ -24,25 +24,24 @@ struct Properties {
 
 impl Parser {
     fn new() -> Self {
-
         Self {
             selectors: HashMap::new(),
         }
     }
 
     fn create_selector(&mut self, selector: Vec<u8>) {
-        self.selectors.insert(selector, Properties::new());
+        self.selectors.entry(selector).or_insert_with(Properties::new);
     }
 
-    fn add_property(&mut self, selector: &Vec<u8>, property: &Vec<u8>, value: Option<&'static [u8]>) {
-        if self.selectors.contains_key(selector) {
-            self.selectors.get_mut(selector).unwrap().insert(property, value);
+    fn add_property(&mut self, selector: &[u8], property: &[u8], value: Option<&'static [u8]>) {
+        if let Some(properties) = self.selectors.get_mut(selector) {
+            properties.insert(property, value);
         }
     }
 
-    fn update_property(&mut self, selector: &Vec<u8>, property: &Vec<u8>, value: &'static [u8]) {
-        if self.selectors.contains_key(selector) {
-            self.selectors.get_mut(selector).unwrap().insert(property, Some(value));
+    fn update_property(&mut self, selector: &[u8], property: &[u8], value: &'static [u8]) {
+        if let Some(properties) = self.selectors.get_mut(selector) {
+            properties.insert(property, Some(value));
         }
     }
 }
@@ -54,35 +53,8 @@ impl Properties {
         }
     }
 
-    fn insert(&mut self, property: &Vec<u8>, value: Option<&'static [u8]>) {
-        if self.properties.contains_key(property) {
-            if let Some(prop) = self.properties.get_mut(property) {
-                if let Some(value) = value {
-                    prop.push(value);
-                }
-            } else {
-                panic!("Failed to insert property: {:?} with value: {:?}", property, value);
-            }
-        } else {
-            if let Some(value) = value {
-                self.properties.insert(property.clone(), vec![value]);
-            } else {
-                
-                self.properties.insert(property.clone(), vec![]);
-            }
-        }
-    }
-
-    fn get(&self, property: &[u8]) -> Option<&Vec<&'static [u8]>> {
-        self.properties.get(property)
-    }
-
-    fn get_mut(&mut self, property: &[u8]) -> Option<&mut Vec<&'static [u8]>> {
-        self.properties.get_mut(property)
-    }
-
-    fn remove(&mut self, property: &[u8]) -> Option<Vec<&'static [u8]>> {
-        self.properties.remove(property)
+    fn insert(&mut self, property: &[u8], value: Option<&'static [u8]>) {
+        self.properties.entry(property.to_vec()).or_insert_with(Vec::new).extend(value);
     }
 }
 
@@ -90,19 +62,13 @@ impl Display for Parser {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         for (selector, properties) in &self.selectors {
             writeln!(f, "{} {{", std::str::from_utf8(selector).unwrap_or_default())?;
-
             for (property, values) in &properties.properties {
                 let prop = std::str::from_utf8(property).unwrap_or_default();
-                let vals: Vec<&str> = values
-                    .iter()
-                    .map(|v| std::str::from_utf8(v).unwrap_or_default())
-                    .collect();
+                let vals: Vec<&str> = values.iter().map(|v| std::str::from_utf8(v).unwrap_or_default()).collect();
                 writeln!(f, "  {}: {};", prop, vals.join(" "))?;
             }
-
             writeln!(f, "}}")?;
         }
-
         Ok(())
     }
 }
