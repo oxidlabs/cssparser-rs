@@ -2,7 +2,10 @@ use cssparser_rs::parse_css;
 
 fn main() {
     let css = include_str!("../bootstrap-4.css");
+    let start = std::time::Instant::now();
     parse_css(css);
+    let end = start.elapsed();
+    println!("Time: {:?}", end);
     //minify_css(css);
 }
 
