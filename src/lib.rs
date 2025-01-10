@@ -1,10 +1,6 @@
-use logos::{Lexer, Logos, Span};
+use logos::{ Logos, Span };
 use core::fmt;
-use std::{ collections::HashMap, fmt::{ Display, Formatter }, fs::File, io::BufWriter };
-use std::sync::{ Arc, Mutex, mpsc };
-use std::thread;
-use std::io::Write;
-
+use std::fmt::{ Display, Formatter };
 use indexmap::IndexMap;
 use std::mem;
 use std::ops::Range;
@@ -16,55 +12,27 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// All meaningful CSS tokens
 #[derive(Logos, Debug)]
-#[logos(skip r"[ \t\r\n\f]+")]
+#[logos(skip r"[\t\r\n\f]+")]
 pub enum Token<'s> {
-    #[regex(r"\[[^\]]+\]", |lex| lex.slice())]
-    AttributeSelector(&'s str),
+    #[regex(r"[_a-zA-Z][-_a-zA-Z0-9]*")] Ident(&'s str),
 
-    #[token("+")]
-    AdjacentSiblingCombinator,
+    #[regex(r"@[_a-zA-Z][-_a-zA-Z0-9]*")] AtKeyword(&'s str),
 
-    #[regex(r"\.[a-zA-Z_][a-zA-Z0-9_-]*", |lex| lex.slice())]
-    ClassSelector(&'s str),
+    #[regex(r"#[_a-zA-Z][-_a-zA-Z0-9]*")] Hash(&'s str),
 
-    #[token("~")]
-    GeneralSiblingCombinator,
+    #[regex(r#""([^"\\]|\\.)*""#)] QuotedString(&'s str),
 
-    #[regex(r"#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?", |lex| lex.slice())]
-    HexColor(&'s str),
+    #[regex(r"url\(([^)]+)\)")] UnquotedUrl(&'s str),
 
-    #[regex(r"#[a-zA-Z_][a-zA-Z0-9_-]*", |lex| lex.slice())]
-    IdSelector(&'s str),
+    #[regex(r"[!-/\-@\[\\`{-~]", priority = 3)] Delim(&'s str),
 
-    #[regex(r"!important", |lex| lex.slice())]
-    Important(&'s str),
+    #[regex(r"[+-]?\d+(\.\d+)?")] Number(&'s str),
 
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_-]*\s*", |lex| lex.slice().trim(), priority = 2)]
-    Value(&'s str),
+    #[regex(r"[+-]?\d+(\.\d+)?%")] Percentage(&'s str),
 
-    #[regex(r":[a-zA-Z_][a-zA-Z0-9_-]*", |lex| lex.slice())]
-    PseudoClass(&'s str),
+    #[regex(r"[+-]?\d+(\.\d+)?[a-zA-Z]+")] Dimension(&'s str),
 
-    #[regex(r"::[a-zA-Z_][a-zA-Z0-9_-]*", |lex| lex.slice())]
-    PseudoElement(&'s str),
-
-    #[regex(r"[a-zA-Z-]+\s*:", |lex| lex.slice().trim_end_matches(':'))]
-    Property(&'s str),
-
-    #[regex(r"[0-9]+(\.[0-9]+)?(px|em|rem|%)?", |lex| lex.slice())]
-    NumericValue(&'s str),
-
-    #[token("{")]
-    OpenBrace,
-
-    #[token(">")]
-    ChildCombinator,
-
-    #[token("}")]
-    CloseBrace,
-
-    #[regex(r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/", logos::skip)]
-    Comment,
+    #[regex(r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/")] Comment(&'s str),
 
     #[token(":")]
     Colon,
@@ -75,169 +43,60 @@ pub enum Token<'s> {
     #[token(",")]
     Comma,
 
-    #[regex(r#""[^"]*""#, |lex| lex.slice())]
-    #[regex(r#"'[^']*'"#, |lex| lex.slice())]
-    StringValue(&'s str),
+    #[token("~=")]
+    IncludeMatch,
 
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_-]*\([^)]*\)", |lex| lex.slice())]
-    Function(&'s str),
-}
+    #[token("|=")]
+    DashMatch,
 
+    #[token("^=")]
+    PrefixMatch,
 
-#[derive(Clone)]
-struct Parser {
-    data: Vec<u8>, // Shared buffer for all strings
-    selectors: IndexMap<Range<usize>, Properties>, // Ranges into data buffer
-}
+    #[token("$=")]
+    SuffixMatch,
 
-#[derive(Debug, Clone)]
-struct Properties {
-    properties: IndexMap<Range<usize>, Range<usize>>, // Property -> Value ranges
-}
+    #[token("*=")]
+    SubstringMatch,
 
-impl Parser {
-    fn new() -> Self {
-        Self {
-            data: Vec::with_capacity(1024 * 64), // Pre-allocate 64KB
-            selectors: IndexMap::new(),
-        }
-    }
+    #[token("<!--")]
+    CDO,
 
-    fn store_bytes(&mut self, bytes: &[u8]) -> Range<usize> {
-        let start = self.data.len();
-        self.data.extend_from_slice(bytes);
-        start..self.data.len()
-    }
+    #[token("-->")]
+    CDC,
 
-    fn commit_buffer(&mut self, buffer: &SelectorBuffer) {
-        if !buffer.selector.is_empty() {
-            let selector_range = self.store_bytes(&buffer.selector);
-            let mut props = Properties::new();
+    #[regex(r"[_a-zA-Z][-_a-zA-Z0-9]*\(")] Function(&'s str),
 
-            // Store all properties and values in shared buffer
-            for (prop, val) in &buffer.properties {
-                let prop_range = self.store_bytes(prop);
-                let val_range = self.store_bytes(val);
-                props.properties.insert(prop_range, val_range);
-            }
+    #[regex(r"\([^)]*\)")]
+    ParenthesisBlock(&'s str),
 
-            self.selectors.insert(selector_range, props);
-        }
-    }
-}
+    #[regex(r"\[[^\]]*\]")]
+    SquareBracketBlock(&'s str),
 
-impl Properties {
-    fn new() -> Self {
-        Self {
-            properties: IndexMap::new(),
-        }
-    }
-}
+    #[regex(r"\{[^}]*\}")]
+    CurlyBracketBlock(&'s str),
 
-#[derive(Default)]
-struct SelectorBuffer {
-    selector: SmallVec<[u8; 256]>,
-    properties: SmallVec<[(SmallVec<[u8; 64]>, SmallVec<[u8; 128]>); 32]>,
-    current_property: SmallVec<[u8; 64]>,
-    current_value: SmallVec<[u8; 128]>,
-}
+    #[regex(r"url\(\s*\)")]
+    BadUrl(&'s str),
 
-impl SelectorBuffer {
-    fn new() -> Self {
-        Self {
-            selector: SmallVec::new(),
-            properties: SmallVec::new(),
-            current_property: SmallVec::new(),
-            current_value: SmallVec::new(),
-        }
-    }
+    #[regex(r#""([^"\\]|\\.)*"#)]
+    BadString(&'s str),
 
-    fn commit_property(&mut self) {
-        if !self.current_property.is_empty() && !self.current_value.is_empty() {
-            self.properties.push((
-                mem::take(&mut self.current_property),
-                mem::take(&mut self.current_value),
-            ));
-        }
-    }
-}
+    #[token(")")]
+    CloseParenthesis,
 
-impl Display for Parser {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        for (selector, properties) in &self.selectors {
-            let selector = String::from_utf8_lossy(&self.data[selector.clone()]);
-            writeln!(f, "{}", selector)?;
+    #[token("]")]
+    CloseSquareBracket,
 
-            for (property, value) in &properties.properties {
-                let property = String::from_utf8_lossy(&self.data[property.clone()]);
-                let value = String::from_utf8_lossy(&self.data[value.clone()]);
-                writeln!(f, "  {}: {};", property, value)?;
-            }
-        }
-
-        Ok(())
-    }
+    #[token("}")]
+    CloseCurlyBracket,
 }
 
 pub fn parse_css(css: &str) {
-    let mut parser = Parser::new();
-    let mut buffer = SelectorBuffer::new();
-
     //let start = std::time::Instant::now();
 
     let mut lexer = Token::lexer(css);
     while let Some(token) = lexer.next() {
         match token {
-            Ok(Token::Value(value)) => {
-                if buffer.selector.is_empty() {
-                    buffer.selector.extend_from_slice(value.as_bytes());
-                } else if !buffer.current_property.is_empty() {
-                    buffer.current_value.extend_from_slice(value.as_bytes());
-                } else {
-                    buffer.selector.extend_from_slice(value.as_bytes());
-                }
-            }
-            | Ok(Token::PseudoClass(pseudo))
-            | Ok(Token::PseudoElement(pseudo))
-            | Ok(Token::IdSelector(pseudo))
-            | Ok(Token::ClassSelector(pseudo))
-            | Ok(Token::AttributeSelector(pseudo)) => {
-                buffer.selector.extend_from_slice(pseudo.as_bytes());
-            }
-            Ok(Token::Property(property)) => {
-                buffer.commit_property();
-                buffer.current_property.extend_from_slice(property.as_bytes());
-            }
-            Ok(Token::OpenBrace) => {
-                // Continue collecting properties
-            }
-            Ok(Token::CloseBrace) => {
-                buffer.commit_property();
-                parser.commit_buffer(&buffer);
-                buffer = SelectorBuffer::new();
-            }
-            Ok(Token::Semicolon) => {
-                buffer.commit_property();
-            }
-            | Ok(Token::NumericValue(value))
-            | Ok(Token::StringValue(value))
-            | Ok(Token::HexColor(value))
-            | Ok(Token::Function(value)) => {
-                buffer.current_value.extend_from_slice(value.as_bytes());
-            }
-            Ok(Token::ChildCombinator) => {
-                buffer.selector.extend_from_slice(b" > ");
-            }
-            Ok(Token::Comment) => {
-                // ignore comments
-            }
-            Ok(Token::Comma) => {
-                if buffer.current_property.is_empty() {
-                    buffer.selector.push(b',');
-                } else {
-                    buffer.current_value.push(b',');
-                }
-            }
             _ => {} // Ignore unexpected tokens
         }
     }
@@ -251,4 +110,3 @@ pub fn parse_css(css: &str) {
     println!("Elapsed: {:?}", elapsed); */
     //println!("{}", parser);
 }
-
