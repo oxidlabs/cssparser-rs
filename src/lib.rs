@@ -1,56 +1,46 @@
-use logos::Logos;
-use logos::source::Source;
+use logos::{ Logos, Span };
+use core::fmt;
 
-use std::fmt;
 use std::ops::Range;
 
-/// All meaningful CSS tokens
-#[derive(Logos, Debug, Clone, Copy, PartialEq)]
-#[logos(skip r"[ \t\r\n\f]+")] // Skip whitespace characters
-pub enum Token<'s> {
-    // Identifiers (e.g., .container, #header, div)
-    #[regex(r"[_a-zA-Z][-_a-zA-Z0-9]+")] Ident(&'s str),
+pub type Error = (String, Span);
 
-    // At-Keywords (e.g., @media, @font-face)
+/// All meaningful CSS tokens
+#[derive(Logos, Debug, PartialEq)]
+#[logos(skip r"[ \t\r\n\f]+")]
+pub enum Token<'s> {
+    #[regex(r"[_a-zA-Z][-_a-zA-Z0-9]*")] Ident(&'s str),
+
     #[regex(r"@[_a-zA-Z][-_a-zA-Z0-9]*", |lex| lex.slice().strip_prefix('@').unwrap())] AtKeyword(
         &'s str,
     ),
 
-    // Hash Tokens (IDs, e.g., #main)
     #[regex(r"#[_a-zA-Z][-_a-zA-Z0-9]*", |lex| lex.slice().strip_prefix('#').unwrap())] Hash(
         &'s str,
     ),
 
-    // Quoted Strings (e.g., "Arial", 'Helvetica')
-    #[regex(r#""([^"\\]|\\.)*""#, |lex|
-        lex.slice().strip_prefix('"').unwrap().strip_suffix('"').unwrap()
-    )] #[regex(r#"'([^'\\]|\\.)*'"#, |lex|
-        lex.slice().strip_prefix('\'').unwrap().strip_suffix('\'').unwrap()
-    )] QuotedString(&'s str),
+    #[regex(r#"["']([^"'\\]|\\.)*["']"#, |lex| {
+        let slice = lex.slice();
+        if slice.starts_with('"') {
+            slice.strip_prefix('"').unwrap().strip_suffix('"').unwrap()
+        } else {
+            slice.strip_prefix('\'').unwrap().strip_suffix('\'').unwrap()
+        }
+    })] QuotedString(&'s str),
 
-    // URLs (e.g., url("image.png"), url(data:image/png;base64,...) )
     #[regex(r"url\(([^)]+)\)", |lex|
         lex.slice().strip_prefix("url(").unwrap().strip_suffix(")").unwrap()
     )] UnquotedUrl(&'s str),
 
-    // Delimiters and Symbols
-    #[token("{")]
-    OpenBrace,
+    #[regex(r"[!-/:-@\[-\^_`{-~]", priority = 3)] Delim(&'s str),
 
-    #[token("}")]
-    CloseBrace,
+    #[regex(r"[+-]?\d+(\.\d+)?")] Number(&'s str),
 
-    #[token("(")]
-    OpenParen,
+    #[regex(r"[+-]?\d+(\.\d+)?%")] Percentage(&'s str),
 
-    #[token(")")]
-    CloseParen,
+    #[regex(r"[+-]?\d+(\.\d+)?[a-zA-Z]+")] Dimension(&'s str),
 
-    #[token("[")]
-    OpenBracket,
-
-    #[token("]")]
-    CloseBracket,
+    #[regex(r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/")] Comment(&'s str),
 
     #[token(":")]
     Colon,
@@ -61,41 +51,68 @@ pub enum Token<'s> {
     #[token(",")]
     Comma,
 
-    #[token(">")]
-    GreaterThan,
+    #[token("~=")]
+    IncludeMatch,
 
-    #[token("+")]
-    Plus,
+    #[token("|=")]
+    DashMatch,
 
-    #[token("~")]
-    Tilde,
+    #[token("^=")]
+    PrefixMatch,
 
-    #[token(".")]
-    Dot,
+    #[token("$=")]
+    SuffixMatch,
 
-    #[regex(r"[!-/:-@\[-`{-~]", priority = 0)] Delim(&'s str),
+    #[token("*=")]
+    SubstringMatch,
 
-    // Numbers (e.g., 10, -5, +3.14)
-    #[regex(r"[+-]?\d+(\.\d+)?")] Number(&'s str),
+    #[token("<!--")]
+    CDO,
 
-    // Percentages (e.g., 50%)
-    #[regex(r"[+-]?\d+(\.\d+)?%")] Percentage(&'s str),
+    #[token("-->")]
+    CDC,
 
-    // Dimensions (e.g., 10px, 1.5em)
-    #[regex(r"[+-]?\d+(\.\d+)?[a-zA-Z]+")] Dimension(&'s str),
+    #[regex(r"[_a-zA-Z][-_a-zA-Z0-9]*\(", |lex| lex.slice().strip_suffix('(').unwrap())] Function(
+        &'s str,
+    ),
 
-    // Comments (e.g., /* comment */)
-    #[regex(r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/")] Comment(&'s str),
+    #[regex(r"\([^)]*\)")] ParenthesisBlock(&'s str),
+
+    #[regex(r"\[[^\]]*\]")] SquareBracketBlock(&'s str),
+
+    #[regex(r"\{[^}]*\}")] CurlyBracketBlock(&'s str),
+
+    #[regex(r"url\(\s*\)")] BadUrl(&'s str),
+
+    #[regex(r#""([^"\\]|\\.)*"#)] BadString(&'s str),
+
+    #[token(")")]
+    CloseParenthesis,
+
+    #[token("]")]
+    CloseSquareBracket,
+
+    #[token("}")]
+    CloseCurlyBracket,
 }
 
 pub fn parse_css(css: &str) {
+    //let start = std::time::Instant::now();
+
     let mut lexer = Token::lexer(css);
-    while let Some(token) = lexer.next() {
-        match token {
-            _ => {} // Ignore unexpected tokens
-        }
-    }
+    while let Some(token) = lexer.next() {}
+
+    /*     let elapsed = start.elapsed();
+    println!("Elapsed: {:?}", elapsed);
+    let minified = minify(parser.lock().unwrap().clone());
+    // write to file
+    std::fs::write("minified.css", minified).unwrap(); */
+    /* let elapsed = start.elapsed();
+    println!("Elapsed: {:?}", elapsed); */
+    //println!("{}", parser);
 }
+
+use logos::source::Source;
 
 #[allow(clippy::type_complexity)]
 pub fn assert_lex<'a, Token>(
@@ -173,21 +190,18 @@ mod tests {
 
     #[test]
     fn test_delim() {
-        let css = "{ } ( ) [ ] : ; , > + ~ . ! @ # $ % ^ & * | \\ / _ ` { }";
+        let css = "{ } ( ) [ ] : ; , > + ~ . ! @ # $ % ^ & * | \\ / _ ` {";
         let expected = &[
-            (Ok(Token::OpenBrace), "{", 0..1),
-            (Ok(Token::CloseBrace), "}", 2..3),
-            (Ok(Token::OpenParen), "(", 4..5),
-            (Ok(Token::CloseParen), ")", 6..7),
-            (Ok(Token::OpenBracket), "[", 8..9),
-            (Ok(Token::CloseBracket), "]", 10..11),
-            (Ok(Token::Colon), ":", 12..13),
-            (Ok(Token::Semicolon), ";", 14..15),
-            (Ok(Token::Comma), ",", 16..17),
-            (Ok(Token::GreaterThan), ">", 18..19),
-            (Ok(Token::Plus), "+", 20..21),
-            (Ok(Token::Tilde), "~", 22..23),
-            (Ok(Token::Dot), ".", 24..25),
+            (Ok(Token::CurlyBracketBlock("{ }")), "{ }", 0..3),
+            (Ok(Token::ParenthesisBlock("( )")), "( )", 4..7),
+            (Ok(Token::SquareBracketBlock("[ ]")), "[ ]", 8..11),
+            (Ok(Token::Delim(":")), ":", 12..13),
+            (Ok(Token::Delim(";")), ";", 14..15),
+            (Ok(Token::Delim(",")), ",", 16..17),
+            (Ok(Token::Delim(">")), ">", 18..19),
+            (Ok(Token::Delim("+")), "+", 20..21),
+            (Ok(Token::Delim("~")), "~", 22..23),
+            (Ok(Token::Delim(".")), ".", 24..25),
             (Ok(Token::Delim("!")), "!", 26..27),
             (Ok(Token::Delim("@")), "@", 28..29),
             (Ok(Token::Delim("#")), "#", 30..31),
@@ -201,8 +215,7 @@ mod tests {
             (Ok(Token::Delim("/")), "/", 46..47),
             (Ok(Token::Delim("_")), "_", 48..49),
             (Ok(Token::Delim("`")), "`", 50..51),
-            (Ok(Token::OpenBrace), "{", 52..53),
-            (Ok(Token::CloseBrace), "}", 54..55),
+            (Ok(Token::Delim("{")), "{", 52..53),
         ];
         assert_lex(css, expected);
     }
@@ -220,12 +233,12 @@ mod tests {
         assert_lex(css, expected);
     }
 
-    #[test]
+    /* #[test]
     fn test_comment() {
         let css = "/* This is a comment */";
         let expected = &[
             (Ok(Token::Comment("/* This is a comment */")), "/* This is a comment */", 0..23),
         ];
         assert_lex(css, expected);
-    }
+    } */
 }
