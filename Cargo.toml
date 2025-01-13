@@ -9,6 +9,8 @@ rand = "0.8.5"
 indexmap = "2.7.0"
 smallvec = "1.7.0"
 criterion = { version = "0.5" }
+serde = { version = "1.0", features = ["derive"] }
+cssparser = "0.33.0"
 
 [profile.release]
 debug = "full"

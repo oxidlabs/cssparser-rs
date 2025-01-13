@@ -1,9 +1,10 @@
-use cssparser_rs::parse_css;
+use cssparser_rs::{parse_css, parser::Parser};
 
 fn main() {
-    let css = include_str!("../bootstrap-4.css");
+    let input = include_str!("../bootstrap-4.css");
     let start = std::time::Instant::now();
-    parse_css(css);
+    let mut parser = Parser::new(input);
+    let style_sheet = parser.parse_stylesheet().unwrap();
     let end = start.elapsed();
     println!("Time: {:?}", end);
     //minify_css(css);

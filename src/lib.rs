@@ -1,23 +1,33 @@
 use logos::{ Logos, Span };
+use logos::source::Source;
 use core::fmt;
 
 use std::ops::Range;
 
-pub type Error = (String, Span);
+pub mod ast;
+pub mod parser;
+
+pub type ParseError = (String, Span);
 
 /// All meaningful CSS tokens
-#[derive(Logos, Debug, PartialEq)]
+#[derive(Logos, Debug, PartialEq, Clone, Copy)]
 #[logos(skip r"[ \t\r\n\f]+")]
+#[logos(extras = (u32, u32))]
 pub enum Token<'s> {
+    #[regex(r"\.[a-zA-Z_-][a-zA-Z0-9_-]*")] ClassSelector(&'s str),
+
     #[regex(r"[_a-zA-Z][-_a-zA-Z0-9]*")] Ident(&'s str),
 
     #[regex(r"@[_a-zA-Z][-_a-zA-Z0-9]*", |lex| lex.slice().strip_prefix('@').unwrap())] AtKeyword(
         &'s str,
     ),
 
-    #[regex(r"#[_a-zA-Z][-_a-zA-Z0-9]*", |lex| lex.slice().strip_prefix('#').unwrap())] Hash(
-        &'s str,
-    ),
+    // PseudoClassSelector
+    #[regex(r":{1,2}-{0,2}[_a-zA-Z][-_a-zA-Z0-9]*", |lex| lex.slice())] PseudoClassSelector(&'s str),
+
+    #[regex(r"#([_a-zA-Z][-_a-zA-Z0-9]*|[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?)", |lex|
+        lex.slice().strip_prefix('#').unwrap()
+    )] Hash(&'s str),
 
     #[regex(r#"["']([^"'\\]|\\.)*["']"#, |lex| {
         let slice = lex.slice();
@@ -40,7 +50,7 @@ pub enum Token<'s> {
 
     #[regex(r"[+-]?\d+(\.\d+)?[a-zA-Z]+")] Dimension(&'s str),
 
-    #[regex(r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/")] Comment(&'s str),
+    #[regex(r"-{1,2}[_a-zA-Z][-_a-zA-Z0-9]*")] CustomProperty(&'s str),
 
     #[token(":")]
     Colon,
@@ -76,15 +86,19 @@ pub enum Token<'s> {
         &'s str,
     ),
 
-    #[regex(r"\([^)]*\)")] ParenthesisBlock(&'s str),
+    #[regex(r"\([^\(\)]*(?:\([^\(\)]*\)[^\(\)]*)*\)")] ParenthesisBlock(&'s str),
 
-    #[regex(r"\[[^\]]*\]")] SquareBracketBlock(&'s str),
+    #[regex(r"\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")] SquareBracketBlock(&'s str),
 
-    #[regex(r"\{[^}]*\}")] CurlyBracketBlock(&'s str),
+    #[regex(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}")] CurlyBracketBlock(&'s str),
+
+    #[regex(r"\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\//")] Comment(&'s str),
 
     #[regex(r"url\(\s*\)")] BadUrl(&'s str),
 
     #[regex(r#""([^"\\]|\\.)*"#)] BadString(&'s str),
+
+    #[token("!important")] Important,
 
     #[token(")")]
     CloseParenthesis,
@@ -100,7 +114,7 @@ pub fn parse_css(css: &str) {
     //let start = std::time::Instant::now();
 
     let mut lexer = Token::lexer(css);
-    while let Some(token) = lexer.next() {}
+    while let Some(_token) = lexer.next() {}
 
     /*     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed);
@@ -111,8 +125,6 @@ pub fn parse_css(css: &str) {
     println!("Elapsed: {:?}", elapsed); */
     //println!("{}", parser);
 }
-
-use logos::source::Source;
 
 #[allow(clippy::type_complexity)]
 pub fn assert_lex<'a, Token>(
